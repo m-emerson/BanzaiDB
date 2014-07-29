@@ -146,6 +146,12 @@ def populate_mapping(args):
         ref, ref_meta = core.reference_genome_features_to_JSON(ref)
         inserted = r.table('ref').insert(ref).run(connection)
         inserted = r.table('ref_feat').insert(ref_meta).run(connection)
+        # Add relations from ref_feat to variants
+        for feature in ref_meta:
+            r.table('variants')\
+                .filter({"LocusTag" : feature.LocusTag})\
+                .update({"RefFeat" : feature.id})\
+                .run(connection)
 
 
 def populate_assembly():

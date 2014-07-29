@@ -45,9 +45,6 @@ def nesoni_report_to_JSON(report_file):
         fin.readline()
         for line in fin:
             ref_id, pos, ftype, old, new, evidence, cons = line.split('\t')
-            tmp = ref_id.split('.')
-            tmp = '.'.join(tmp[:-1])
-            ref_id = tmp
             obs_count = parsers.parse_evidence(evidence)
             # Deal with "mixed" features
             mixed = cons.split(',')
