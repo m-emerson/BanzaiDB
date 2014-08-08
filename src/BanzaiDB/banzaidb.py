@@ -154,7 +154,6 @@ def populate_mapping(args):
                 .update({"RefFeat" : feature['id']})\
                 .run(connection)
 
-
 def populate_assembly():
     """
     Populate the database with an assembly run
