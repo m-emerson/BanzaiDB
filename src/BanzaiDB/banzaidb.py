@@ -5,7 +5,7 @@
 # not use this file except in compliance with the License. You may
 # obtain a copy of the License at
 #
-# http://www.osedu.org/licenses/ECL-2.0
+#   http://www.osedu.org/licenses/ECL-2.0
 #
 # Unless required by applicable law or agreed to in writing,
 # software distributed under the License is distributed on an "AS IS"
@@ -13,15 +13,19 @@
 # or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import sys, os, traceback, argparse, time
-
+import sys
+import os
+import traceback
+import argparse
+import time
 import glob
 
 import rethinkdb as r
-from   rethinkdb.errors import RqlRuntimeError
+from rethinkdb.errors import RqlRuntimeError
 
 from BanzaiDB import core
 from BanzaiDB import database
+from BanzaiDB import misc
 
 """
 BanzaiDB
@@ -31,32 +35,34 @@ BanzaiDB is a tool for pairing Microbial Genomics Next Generation Sequencing
 (NGS) analysis with a NoSQL database. We use the RethinkDB NoSQL database.
 """
 
-__title__         = 'BanzaiDB'
-__version__       = '0.1.2'
-__description__   = "Database tool for the Banzai NGS pipeline"
-__author__        = 'Mitchell Stanton-Cook'
-__author_email__  = 'm.stantoncook@gmail.com'
-__url__           = 'http://github.com/mscook/BanzaiDB'
-__license__       = 'ECL 2.0'
+__title__ = 'BanzaiDB'
+__version__ = '0.2.0'
+__description__ = "Database tool for the Banzai NGS pipeline"
+__author__ = 'Mitchell Stanton-Cook'
+__author_email__ = 'm.stantoncook@gmail.com'
+__url__ = 'http://github.com/mscook/BanzaiDB'
+__license__ = 'ECL 2.0'
 
 epi = "Licence: %s by %s <%s>" % (__license__,
                                   __author__,
                                   __author_email__)
-__doc__ = " %s v%s - %s (%s)" % ( __title__,
-                                  __version__,
-                                  __description__,
-                                  __url__)
+__doc__ = " %s v%s - %s (%s)" % (__title__,
+                                 __version__,
+                                 __description__,
+                                 __url__)
 
+BLOCKS = 2500
 
 
 def init_database_with_default_tables(args):
     """
-    Create a new RethinkDB database
+    Create a new RethinkDB database and initialise (default) tables
 
     :param args: an argparse argument (force)
     """
     # Add additional (default) tables here...
-    def_tables = ['variants', 'strains', 'ref', 'ref_feat']
+    def_tables = ['determined_variants', 'strains_under_investigation',
+                  'references', 'reference_features']
     with database.make_connection() as connection:
         try:
             r.db_create(connection.db).run(connection)
@@ -74,7 +80,7 @@ def init_database_with_default_tables(args):
             else:
                 sys.exit(1)
         print ("Initalised database %s. %s contains the following tables: "
-                "%s" % (connection.db, connection.db, ', '.join(def_tables)))
+               "%s" % (connection.db, connection.db, ', '.join(def_tables)))
 
 
 def populate_database_with_data(args):
@@ -123,29 +129,47 @@ def populate_mapping(args):
     run_path = os.path.normpath(os.path.expanduser(args.run_path))
     # TODO - handle '.' in reference
     ref = run_path.split('/')[-1].split('.')[0]
-    infiles = glob.glob(run_path+'/*/report.txt')
+    infile = glob.glob(run_path+'/nway-SNPs_INDELS-comparison/*.any.withref')
+    assert len(infile) == 1
+    infile = infile[0]
     ref = os.path.join(run_path+'/', ref+'/reference.gbk')
     with database.make_connection() as connection:
-        for report in infiles:
-            parsed = core.nesoni_report_to_JSON(report)
-            count = len(parsed)
-            if count != 0:
-                inserted = r.table('variants').insert(parsed).run(connection)
-                strain_JSON = {"StrainID": parsed[0]['StrainID'],
-                            "VarCount": count,
-                            "id": parsed[0]['StrainID']}
-                inserted = r.table('strains').insert(strain_JSON).run(connection)
-            else:
-                print "No variants for %s. Skipped" % (report)
-                s = report.split('/')[-2]
-                strain_JSON = {"StrainID" : s,
-                            "VarCount" : 0,
-                            "id" : s}
-                inserted = r.table('strains').insert(strain_JSON).run(connection)
+        parsed, stats = core.nesoni_report_to_JSON(core.nway_reportify(infile))
+        # Insert all variants
+        chunks = misc.chunk_list(parsed, BLOCKS)
+        for chunk in chunks:
+            r.table('determined_variants').insert(chunk).run(connection)
+        print "Mapping statistics"
+        print "Strain,Variants"
+        for sid, count in stats.items():
+            print "%s,%s" % (sid, count)
+            strain_JSON = {"StrainID": sid,
+                           "VarCount": count,
+                           "id": sid}
+            r.table('strains_under_investigation').insert(strain_JSON).run(connection)
         # Now, do the reference
         ref, ref_meta = core.reference_genome_features_to_JSON(ref)
-        inserted = r.table('ref').insert(ref).run(connection)
-        inserted = r.table('ref_feat').insert(ref_meta).run(connection)
+        # Do we already have a reference stored as current?
+        need_update = True
+        try:
+            r.table('references').get("current_reference").has_fields("reference_id").run(connection)
+        except RqlRuntimeError:
+            need_update = False
+        if need_update:
+            stored = r.table('references').get("current_reference").pluck("reference_id", "revision").run(connection)
+            # Do we need to update...
+            if (stored["reference_id"] != ref["id"] or
+                stored["revision"] != ref["revision"]):
+                r.table('references').insert(ref).run(connection)
+                r.table('references').get("current_reference").update({"reference_id": ref["id"], "revision": ref["revision"]}).run(connection)
+                r.table('reference_features').insert(ref_meta).run(connection)
+            else:
+                print ("Current stored reference and reference for this run "
+                       "are the same \n Not doing anything")
+        else:
+            r.table('references').insert(ref).run(connection)
+            r.table('references').insert({"id": "current_reference", "reference_id": ref["id"], "revision": ref["revision"]}).run(connection)
+            r.table('reference_features').insert(ref_meta).run(connection)
 
         # Add relations from ref_feat to variants
         for feature in ref_meta:

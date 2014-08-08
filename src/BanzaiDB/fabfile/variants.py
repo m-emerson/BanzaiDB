@@ -15,6 +15,8 @@ from collections import Counter
 import ast
 
 import rethinkdb as r
+from rethinkdb.errors import RqlRuntimeError
+
 from fabric.api import task
 
 from BanzaiDB import database
@@ -22,9 +24,9 @@ from BanzaiDB import converters
 from BanzaiDB import misc
 from BanzaiDB import imaging
 
-# __version__ = 0.1.2
+# __version__ = 0.2.0
 
-TABLE = 'variants'
+TABLE = 'determined_variants'
 
 
 def get_required_strains(strains):
@@ -45,12 +47,11 @@ def get_required_strains(strains):
     strains_list = []
     with database.make_connection() as connection:
         if strains is None:
-            get_strains = r.table('strains').pluck('StrainID').run(connection)
+            get_strains = r.table('strains_under_investigation').pluck('StrainID').run(connection)
             strains_list = [e['StrainID'].encode('ascii', 'ignore') for e in get_strains]
         else:
             strains_list = strains.split(' ')
     return strains_list
-
 
 def get_num_strains():
     """
@@ -65,13 +66,24 @@ def get_num_strains():
     strain_count = len(strains)
     with database.make_connection() as connection:
         # In case reference is included in run
-        # Will need to update for multiple runs
-        ref_id = list(r.table('ref').run(connection))[0]['id']
+        # Supports current reference
+        ref_id = get_current_reference_id()
         for e in strains:
             if e.find(ref_id) != -1:
                 strain_count = strain_count-1
                 break
     return strain_count
+
+
+def get_current_reference_id():
+    """
+    Returns the current reference
+
+    :returns the current references primary key as a string
+    """
+    with database.make_connection() as connection:
+        return r.table('references').get("current_reference").run(connection)["reference_id"]
+
 
 
 def filter_counts(list_of_elements, minimum):
@@ -136,47 +148,100 @@ def fetch_given_strain_position(strain, position):
 
 
 @task
-def get_variants_in_range(start, end, verbose=True,
-                          plucking='StrainID Position LocusTag Class SubClass'):
+def get_variant_stats(strains):
     """
-    Return all the variants in given [start:end] range (inclusive of)
+    Return (and print) variant stats given 1 or more space delimited strain IDs
+
+    Breakdown of counts:
+        * substitution (syn/non-sys)
+        * insertion
+        * deletion
+    """
+    results = {}
+    with database.make_connection() as connection:
+        pass
+
+def get_generator(strains, reference_id, start, end):
+    """
+    Generates a list of primary keys to pass to a get all call
+
+    Exploit that SNP primary keys are in the format::
+
+        STRAINID_REFID_POSITION
+        ASCC880030_NC_008527_100230
+
+    :param strains: a list of strain ids
+    :param reference_id: the current reference id
+    :param start: the snp start range
+    :param end: the snp end range
+
+    :type strains: list
+    :type reference_id: string
+    :type start: int
+    :type end: int
+
+    :returns: a list of possible primary keys
+    """
+    primary_keys = []
+    vals = range(start, end+1)
+    for val in vals:
+        for strain in strains:
+            primary_keys.append(strain+"_"+reference_id+"_"+str(val))
+    return primary_keys
+
+
+@task
+def get_SNPs_in_range(start, end, verbose=True,
+                      plucking='StrainID Position LocusTag SubClass'):
+    """
+    Return all the SNPs in given [start:end] range (inclusive of)
 
     By default: print (in CSV) results with headers:
-    StrainID, Position, LocusTag, Class, SubClass
+    StrainID, Position, LocusTag, SubClass
 
     Examples::
 
-        # All variants in the 1Kb range of 60K-61K
-        fab variants.get_variants_in_range:60000,61000
+        # All variants in the 1 Kb range of 60K-61K
+        fab variants.get_SNPs_in_range:60000,61000
 
-        #Nail down on a particular position and redefine the output
-        fab variants.get_variants_in_range:60760,60760,plucking='StrainID Position Class Product'
+        # Nail down on a particular position and redefine the output
+        fab variants.get_SNPs_in_range:191,191,plucking='StrainID Position Class Product'
 
     :param start: the genomic location start
     :param end: the genomic location end
     :param verbose: [def = True] toggle if printing results
-    :param plucking: [def = 'StrainID Position LocusTag Class SubClass']
+    :param plucking: [def = 'StrainID Position LocusTag SubClass']
                      toggle headers based on table values
 
     :returns: List containing JSON elements with the data: 'StrainID',
-                'Position', 'LocusTag', 'Class', 'SubClass' for each result
+                'Position', 'LocusTag', 'SubClass' for each result
     """
     verbose = ast.literal_eval(str(verbose))
     plucking = plucking.split(' ')
-    ROW = 'Position'
+    strains = get_required_strains(None)
+    reference = get_current_reference_id()
+    possible_primary_keys = get_generator(strains, reference,
+                                          int(start), int(end))
     JSON_result = []
+    count = 0
     with database.make_connection() as connection:
-        cursor = r.table(TABLE).filter(r.row[ROW] <= int(end)).filter(
-            r.row[ROW] >= int(start)).pluck(plucking).run(connection)
-        JSON_result = []
-        for idx, document in enumerate(cursor):
-            if verbose:
-                if idx != 0:
-                    print converters.convert_from_JSON_to_CSV(document)
+        for e in possible_primary_keys:
+            try:
+                # get won't give a cursor
+                value = r.table(TABLE).get(e).pluck(plucking).run(connection)
+                count += 1
+            except RqlRuntimeError:
+                value = None
+            if value is not None:
+                if count == 1:
+                    print converters.convert_from_JSON_to_CSV(value, True)
                 else:
-                    print converters.convert_from_JSON_to_CSV(document, True)
-            JSON_result.append(document)
-        return JSON_result
+                    print converters.convert_from_JSON_to_CSV(value)
+                JSON_result.append(value)
+    dist = float((int(end)-int(start))+1)
+    density = count/dist
+    #print "\nAverage SNP density in region: %f" % (density/float(len(strains)))
+    return JSON_result
 
 
 @task
@@ -276,7 +341,7 @@ def variant_hotspots(most_prevalent=100, verbose=True):
     with database.make_connection() as connection:
         for element in mp:
             first_hit = list(r.table(TABLE).filter(r.row[ROW] == int(element[0])).pluck('Position', 'LocusTag').run(connection))[0]
-            product = '"'+list(r.table('ref_feat').filter({'LocusTag': first_hit['LocusTag']}).pluck('Product').run(connection))[0]['Product']+'"'
+            product = '"'+list(r.table('reference_features').filter({'LocusTag': first_hit['LocusTag']}).pluck('Product').run(connection))[0]['Product']+'"'
             cur = '%i,%i,%s,%s' % (element[1], first_hit['Position'], first_hit['LocusTag'], product)
             results.append(cur)
             if verbose:
@@ -326,7 +391,7 @@ def variant_positions_within_atleast(minimum_at_position=None, verbose=True):
     with database.make_connection() as connection:
         for element in lookup:
             first_hit = list(r.table(TABLE).filter(r.row[ROW] == int(element)).pluck('Position', 'LocusTag').run(connection))[0]
-            product = '"'+list(r.table('ref_feat').filter({'LocusTag': first_hit['LocusTag']}).pluck('Product').run(connection))[0]['Product']+'"'
+            product = '"'+list(r.table('reference_features').filter({'LocusTag': first_hit['LocusTag']}).pluck('Product').run(connection))[0]['Product']+'"'
             cur = '%i,%s,%s' % (first_hit['Position'], first_hit['LocusTag'], product)
             results.append(cur)
             if verbose:
@@ -351,6 +416,7 @@ def strain_variant_stats(strains=None, verbose=True):
     :returns: a list of results in CSV
     """
     verbose = ast.literal_eval(str(verbose))
+    ROW = 'StrainID'
     strains = get_required_strains(strains)
     header = "StrainID,Total Variants,Substitution,Insertion,Deletion"
     results = []
