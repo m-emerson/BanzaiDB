@@ -21,12 +21,22 @@
 (Using landscape.io and drone.io)
 
 
+News
+----
+
+**API changes (v1 -> v2 -> v3 -> v?)**. The population of a mapping run 
+into BanzaiDB was dependent on a nesoni run. Originally we (API v1) parsed 
+the reports.txt for each strain. In API v2 we parse the nway.any (assumes you 
+have ran nesoni nway). BanzaiDB API v3 assumes that you still have accessto 
+the consensus.fa (called a consensus). We need this data to store information 
+in BanzaiDB about coverage.
+
+**All versions of BanzaiDB prior to v0.2 made some significant assumptions 
+that are currently being improved.**
+
+
 What is BanzaiDB?
 -----------------
-
-**Please use the releases (https://github.com/mscook/BanzaiDB/releases). All 
-versions including most recent made some significant assumptions that are 
-currently being improved.**
 
 BanzaiDB is a tool for pairing Microbial Genomics Next Generation Sequencing 
 (NGS) analysis with a NoSQL_ database. We use the RethinkDB_ NoSQL database.
@@ -109,6 +119,7 @@ You will need:
     * a RethinkDB_ server/instance. This can be running locally or on a VPS, 
     * git (to clone this repository) and
     * pip_
+    * bedtools, samtools and tabix (for pybedtools)
 
 You will also need a few Python modules:
     * rethinkdb
@@ -117,13 +128,16 @@ You will also need a few Python modules:
     * fabric
     * tablib
     * argparse (if Python 2.6)
+    * pybedtools (you will probably also need to install cython)
+
 
 The Python modules should/will be pulled down automatically when installing 
 BanzaiDB.
 
-We recommend you increase the rethinkdb python `driver performance`_. We have 
-found that in some cases the installation of C++ backend fails. `We provide`_ 
-a simple protocol that we have found works.
+**The following is no longer needed if you're using a recent version of 
+RethinkDB:** We recommend you increase the rethinkdb python 
+`driver performance`_. We have found that in some cases the installation of C++ 
+backend fails. `We provide`_ a simple protocol that we have found works.
 
 
 BanzaiDB Installation
@@ -131,6 +145,10 @@ BanzaiDB Installation
 
 Something like this::
 
+    $ # A 'stable' release
+    $ pip install BanzaiDB
+    $
+    $ # More bleeding....
     $ git clone https://github.com/mscook/BanzaiDB.git
     $ cd BanzaiDB
     $ python setup.py install
@@ -161,7 +179,7 @@ Once both RethinkDB and BanzaiDB are installed and the configuration is set::
     $ python BanzaiDB.py -h
     usage: BanzaiDB.py [-h] [-v] {init,populate,update,query} ...
 
-    BanzaiDB v 0.2.0 - Database for Banzai NGS pipeline tool
+    BanzaiDB v 0.3.0 - Database for Banzai NGS pipeline tool
     (http://github.com/mscook/BanzaiDB)
 
     positional arguments:
